@@ -168,6 +168,12 @@ impl Dssim {
         self.save_maps_scales = num_scales;
     }
 
+    /// How many scales are currently kept for saving
+    #[must_use]
+    pub fn save_maps_scales(&self) -> u8 {
+        self.save_maps_scales
+    }
+
     /// Create image from an array of RGBA pixels (sRGB, non-premultiplied, alpha last).
     ///
     /// If you have a slice of `u8`, then see `rgb` crate's `as_rgba()`.
