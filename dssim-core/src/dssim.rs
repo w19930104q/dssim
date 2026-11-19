@@ -192,6 +192,39 @@ impl Dssim {
         self.create_image(&img)
     }
 
+    /// Create image from an array of 16-bit RGBA pixels (sRGB, non-premultiplied, alpha last).
+    ///
+    /// This is the 16-bit equivalent of [`create_image_rgba()`][Self::create_image_rgba].
+    /// The full 16-bit precision is retained: pixel values are converted to linear
+    /// light through a 65536-entry sRGB lookup table (not truncated to 8 bits),
+    /// and then compared with the same multi-scale algorithm as 8-bit images.
+    ///
+    /// Values exactly on the 8-bit grid (`n * 257`) linearize to bit-identical
+    /// floats as their 8-bit equivalents, so a 16-bit image that is an exact
+    /// 8-bit image expanded to 16 bits compares as exactly equal to it.
+    #[must_use]
+    pub fn create_image_rgba16(&self, bitmap: &[RGBA<u16>], width: usize, height: usize) -> Option<DssimImage<f32>> {
+        if width * height < bitmap.len() {
+            return None;
+        }
+        let img = ImgVec::new(bitmap.to_rgbaplu(), width, height);
+        self.create_image(&img)
+    }
+
+    /// Create image from an array of packed 16-bit RGB pixels (sRGB).
+    ///
+    /// This is the 16-bit equivalent of [`create_image_rgb()`][Self::create_image_rgb].
+    /// Like [`create_image_rgba16()`][Self::create_image_rgba16], the input is
+    /// linearized at full 16-bit precision before comparison.
+    #[must_use]
+    pub fn create_image_rgb16(&self, bitmap: &[RGB<u16>], width: usize, height: usize) -> Option<DssimImage<f32>> {
+        if width * height < bitmap.len() {
+            return None;
+        }
+        let img = ImgVec::new(bitmap.to_rgblu(), width, height);
+        self.create_image(&img)
+    }
+
     /// The input image is defined using the `imgref` crate, and the pixel type can be:
     ///
     /// * `ImgVec<RGBAPLU>` — RGBA premultiplied alpha, linear, float scaled to 0..1
@@ -633,3 +666,85 @@ fn ssim_maps_scale_order() {
     assert_eq!(f64::from(score1).to_bits(), f64::from(score2).to_bits());
 }
 
+
+/// 16-bit pixel input (`create_image_rgb16` / `create_image_rgba16`) must be
+/// linearized at full 16-bit precision via the 65536-entry sRGB LUT, not
+/// truncated to 8 bits.
+///
+/// Values exactly on the 8-bit grid (`n * 257`) linearize to bit-identical
+/// floats as their 8-bit equivalents: both LUTs evaluate `to_linear()` on the
+/// same real quotient `n / 255` (IEEE division is correctly rounded, and
+/// `(n*257) as f32 / 65535.` and `n as f32 / 255.` round the same real
+/// number), so a 16-bit image expanded from 8 bits compares as *exactly*
+/// equal to its 8-bit truncation. Sub-8-bit detail, on the other hand, must
+/// be detected as a difference.
+#[test]
+fn rgb16_input() {
+    let d = new();
+    let (w, h) = (32, 32);
+
+    let px8: Vec<RGB<u8>> = (0..w * h)
+        .map(|i| RGB::new((i * 3) as u8, (i * 5) as u8, (i * 7) as u8))
+        .collect();
+    // Same image expanded to 16 bits on the exact 8-bit grid.
+    let px16: Vec<RGB<u16>> = px8.iter()
+        .map(|p| RGB::new(u16::from(p.r) * 257, u16::from(p.g) * 257, u16::from(p.b) * 257))
+        .collect();
+
+    let img8 = d.create_image_rgb(&px8, w, h).unwrap();
+    let img16 = d.create_image_rgb16(&px16, w, h).unwrap();
+
+    // Grid-aligned 16-bit input vs its 8-bit truncation: exactly zero.
+    let (res, _) = d.compare(&img8, &img16);
+    assert_eq!(0.0, f64::from(res), "grid-aligned 16-bit must equal its 8-bit truncation");
+
+    // Identity: 16-bit image vs itself is exactly zero.
+    let img16b = d.create_image_rgb16(&px16, w, h).unwrap();
+    let (res, _) = d.compare(&img16, &img16b);
+    assert_eq!(0.0, f64::from(res), "16-bit identity must be exactly 0");
+
+    // Sub-8-bit precision is retained: flipping only low bits (invisible to
+    // the 8-bit path) must be detected as a nonzero difference.
+    let px16_low: Vec<RGB<u16>> = px16.iter()
+        .map(|p| RGB::new(p.r ^ 0x80, p.g ^ 0x80, p.b ^ 0x80))
+        .collect();
+    let img16_low = d.create_image_rgb16(&px16_low, w, h).unwrap();
+    let (res, _) = d.compare(&img16, &img16_low);
+    assert!(f64::from(res) > 0.0, "low-bit-only difference must be detected");
+    let (res8, _) = d.compare(&img8, &img8);
+    assert_eq!(0.0, f64::from(res8));
+}
+
+/// Same guarantees as `rgb16_input`, but for the RGBA path: alpha is
+/// premultiplied after linearization, and grid-aligned 16-bit RGBA is
+/// bit-equivalent to its 8-bit truncation.
+#[test]
+fn rgba16_input() {
+    let d = new();
+    let (w, h) = (32, 32);
+
+    let px8: Vec<RGBA<u8>> = (0..w * h)
+        .map(|i| RGBA::new((i * 3) as u8, (i * 5) as u8, (i * 7) as u8, 128 + (i % 128) as u8))
+        .collect();
+    let px16: Vec<RGBA<u16>> = px8.iter()
+        .map(|p| RGBA::new(u16::from(p.r) * 257, u16::from(p.g) * 257, u16::from(p.b) * 257, u16::from(p.a) * 257))
+        .collect();
+
+    let img8 = d.create_image_rgba(&px8, w, h).unwrap();
+    let img16 = d.create_image_rgba16(&px16, w, h).unwrap();
+
+    let (res, _) = d.compare(&img8, &img16);
+    assert_eq!(0.0, f64::from(res), "grid-aligned 16-bit RGBA must equal its 8-bit truncation");
+
+    let img16b = d.create_image_rgba16(&px16, w, h).unwrap();
+    let (res, _) = d.compare(&img16, &img16b);
+    assert_eq!(0.0, f64::from(res), "16-bit RGBA identity must be exactly 0");
+
+    // Alpha channel participates: same colors, different alpha must differ.
+    let px16_alpha: Vec<RGBA<u16>> = px16.iter()
+        .map(|p| RGBA::new(p.r, p.g, p.b, p.a / 2))
+        .collect();
+    let img16_alpha = d.create_image_rgba16(&px16_alpha, w, h).unwrap();
+    let (res, _) = d.compare(&img16, &img16_alpha);
+    assert!(f64::from(res) > 0.0, "alpha difference must be detected");
+}

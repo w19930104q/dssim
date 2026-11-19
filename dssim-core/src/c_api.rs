@@ -1,5 +1,5 @@
 use crate::Dssim;
-use rgb::{RGB8, RGBA8};
+use rgb::{RGB8, RGBA8, RGB16, RGBA16};
 use std::ptr;
 
 pub type DssimImage = crate::DssimImage<f32>;
@@ -53,6 +53,48 @@ pub unsafe extern "C" fn dssim_create_image_rgb(dssim: &mut Dssim, pixels: *cons
     let height = height as usize;
     let pixels = unsafe { std::slice::from_raw_parts(pixels.cast::<RGB8>(), width * height) };
     match dssim.create_image_rgb(pixels, width, height) {
+        Some(img) => Box::into_raw(Box::new(img)),
+        None => ptr::null_mut(),
+    }
+}
+
+/// Take 16-bit sRGB RGBA pixels (non-premultiplied, alpha last) and preprocess them into image format that can be compared.
+///
+/// The full 16-bit precision is used (values are linearized, not truncated to 8 bits).
+///
+/// Pixels are copied. Returns NULL on error.
+///
+/// Call `dssim_free_image` to free memory when the image is no longer needed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dssim_create_image_rgba16(dssim: &mut Dssim, pixels: *const u16, width: u32, height: u32) -> *mut DssimImage {
+    if pixels.is_null() {
+        return ptr::null_mut();
+    }
+    let width = width as usize;
+    let height = height as usize;
+    let pixels = unsafe { std::slice::from_raw_parts(pixels.cast::<RGBA16>(), width * height) };
+    match dssim.create_image_rgba16(pixels, width, height) {
+        Some(img) => Box::into_raw(Box::new(img)),
+        None => ptr::null_mut(),
+    }
+}
+
+/// Take 16-bit sRGB RGB pixels and preprocess them into image format that can be compared.
+///
+/// The full 16-bit precision is used (values are linearized, not truncated to 8 bits).
+///
+/// Pixels are copied. Returns NULL on error.
+///
+/// Call `dssim_free_image` to free memory when the image is no longer needed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn dssim_create_image_rgb16(dssim: &mut Dssim, pixels: *const u16, width: u32, height: u32) -> *mut DssimImage {
+    if pixels.is_null() {
+        return ptr::null_mut();
+    }
+    let width = width as usize;
+    let height = height as usize;
+    let pixels = unsafe { std::slice::from_raw_parts(pixels.cast::<RGB16>(), width * height) };
+    match dssim.create_image_rgb16(pixels, width, height) {
         Some(img) => Box::into_raw(Box::new(img)),
         None => ptr::null_mut(),
     }

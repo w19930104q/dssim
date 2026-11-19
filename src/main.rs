@@ -214,3 +214,35 @@ fn rgblu_input() {
     let imr: ImgRef<'_, RGBLU> = im.as_ref();
     ctx.create_image(&imr);
 }
+
+/// 16-bit PNG inputs must be linearized at full 16-bit precision, not
+/// truncated to 8 bits. A 16-bit image that is an exact 8-bit image expanded
+/// to 16 bits (`n` -> `n * 257`) must compare as exactly equal to its 8-bit
+/// truncation, and any 16-bit image must compare as exactly equal to itself.
+#[test]
+fn image_16bit() {
+    let attr = dssim::Dssim::new();
+
+    // Identity: 16-bit RGB and RGBA images vs themselves are exactly zero.
+    for path in ["tests/16bit.png", "tests/16bit-alpha.png"] {
+        let a = dssim::load_image(&attr, path).unwrap();
+        let b = dssim::load_image(&attr, path).unwrap();
+        let (diff, _) = attr.compare(&a, b);
+        assert_eq!(0.0, f64::from(diff), "{path} vs itself must be exactly 0");
+    }
+
+    // Grid-aligned 16-bit image vs its own 8-bit truncation: exactly zero.
+    let g16 = dssim::load_image(&attr, "tests/16bit-grid.png").unwrap();
+    let g8 = dssim::load_image(&attr, "tests/8bit-grid.png").unwrap();
+    let (diff, _) = attr.compare(&g16, g8);
+    assert_eq!(0.0, f64::from(diff), "grid-aligned 16-bit must equal its 8-bit truncation");
+
+    // Sub-8-bit precision is retained: the 16-bit gradient differs from its
+    // own 8-bit truncation by a small, nonzero amount (the quantization
+    // error is real signal, not zero and not a spurious large difference).
+    let full16 = dssim::load_image(&attr, "tests/16bit.png").unwrap();
+    let trunc8 = dssim::load_image(&attr, "tests/16bit-truncated8.png").unwrap();
+    let (diff, _) = attr.compare(&full16, trunc8);
+    assert!(f64::from(diff) > 0.0, "16-bit detail must not be truncated away");
+    assert!(f64::from(diff) < 0.001, "16-bit vs its 8-bit truncation must be small, got {diff}");
+}
