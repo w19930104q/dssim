@@ -93,6 +93,30 @@ pub struct SsimMap {
     pub ssim: f64,
 }
 
+/// Error returned by [`Dssim::try_compare`] when the two images don't have
+/// identical dimensions. DSSIM is a per-pixel metric, so comparing images of
+/// different sizes is meaningless and is rejected instead of being silently
+/// truncated to the common scales.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MismatchedImageSize {
+    /// `(width, height)` of the original image
+    pub original: (usize, usize),
+    /// `(width, height)` of the modified image
+    pub modified: (usize, usize),
+}
+
+impl std::fmt::Display for MismatchedImageSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "images must have identical dimensions, but the original is {}x{} and the modified is {}x{}",
+            self.original.0, self.original.1, self.modified.0, self.modified.1,
+        )
+    }
+}
+
+impl std::error::Error for MismatchedImageSize {}
+
 /// Create new context for a comparison
 #[must_use]
 pub fn new() -> Dssim {
@@ -260,12 +284,39 @@ impl Dssim {
     /// The `SsimMap`s are returned only if you've enabled them first.
     ///
     /// `Val` is a fancy wrapper for `f64`
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two images have different dimensions. Use
+    /// [`try_compare`][Self::try_compare] to get a `Result` instead.
+    #[track_caller]
     pub fn compare<M: Borrow<DssimImage<f32>>>(&self, original_image: &DssimImage<f32>, modified_image: M) -> (Val, Vec<SsimMap>) {
-        self.compare_inner(original_image, modified_image.borrow())
+        self.try_compare(original_image, modified_image)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Fallible version of [`compare`][Self::compare]. Returns
+    /// [`MismatchedImageSize`] instead of panicking when the two images have
+    /// different dimensions.
+    pub fn try_compare<M: Borrow<DssimImage<f32>>>(&self, original_image: &DssimImage<f32>, modified_image: M) -> Result<(Val, Vec<SsimMap>), MismatchedImageSize> {
+        let modified_image = modified_image.borrow();
+        let original_size = (original_image.width(), original_image.height());
+        let modified_size = (modified_image.width(), modified_image.height());
+        if original_size != modified_size {
+            return Err(MismatchedImageSize {
+                original: original_size,
+                modified: modified_size,
+            });
+        }
+        Ok(self.compare_inner(original_image, modified_image))
     }
 
     #[inline(never)]
     fn compare_inner(&self, original_image: &DssimImage<f32>, modified_image: &DssimImage<f32>) -> (Val, Vec<SsimMap>) {
+        // Same top-level dimensions (enforced by `try_compare`) imply the
+        // same deterministic downsample chain, so the zip below can't
+        // silently drop scales.
+        debug_assert_eq!(original_image.scale.len(), modified_image.scale.len());
         let scaled_images_iter = modified_image.scale.iter().zip(original_image.scale.iter());
         let combined_iter = self.scale_weights.iter().copied().zip(scaled_images_iter).enumerate();
 
@@ -631,5 +682,45 @@ fn ssim_maps_scale_order() {
     // Same inputs -> identical score bits (deterministic accumulation).
     let (score2, _) = d.compare(&img1, &img2);
     assert_eq!(f64::from(score1).to_bits(), f64::from(score2).to_bits());
+}
+
+/// Different-size comparisons must fail explicitly instead of silently
+/// truncating to the shorter scale chain.
+#[test]
+fn mismatched_size_try_compare_errors() {
+    use imgref::*;
+
+    let d = new();
+    let img = |w, h| d.create_image(&ImgVec::new(vec![0.5f32; w * h], w, h)).unwrap();
+
+    let a = img(64, 64);
+    let wider = img(65, 64);
+    let taller = img(64, 63);
+    let smaller = img(32, 32);
+
+    for (name, other) in [("wider", &wider), ("taller", &taller), ("smaller", &smaller)] {
+        let err = d.try_compare(&a, other).err().expect("must reject different sizes");
+        assert_eq!(err.original, (64, 64), "{name}");
+        assert_eq!(err.modified, (other.width(), other.height()), "{name}");
+        // Rejected in both directions — no argument order silently "works".
+        assert!(d.try_compare(other, &a).is_err(), "{name} reversed");
+    }
+
+    // Equal dimensions are accepted, and `try_compare` agrees with `compare`.
+    let b = img(64, 64);
+    let (try_score, _) = d.try_compare(&a, &b).unwrap();
+    let (score, _) = d.compare(&a, &b);
+    assert_eq!(f64::from(try_score).to_bits(), f64::from(score).to_bits());
+}
+
+#[test]
+#[should_panic(expected = "images must have identical dimensions, but the original is 64x64 and the modified is 32x32")]
+fn mismatched_size_compare_panics() {
+    use imgref::*;
+
+    let d = new();
+    let a = d.create_image(&ImgVec::new(vec![0.5f32; 64 * 64], 64, 64)).unwrap();
+    let b = d.create_image(&ImgVec::new(vec![0.5f32; 32 * 32], 32, 32)).unwrap();
+    let _ = d.compare(&a, &b);
 }
 

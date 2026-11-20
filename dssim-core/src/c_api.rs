@@ -71,11 +71,15 @@ pub unsafe extern "C" fn dssim_free_image(img: *mut DssimImage) {
 ///
 /// `img1` can be reused for multiple comparisons.
 ///
+/// Returns NaN if either image is NULL or the images have different dimensions.
+///
 /// Don't forget to free the images and the DSSIM context when done.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dssim_compare(dssim: &mut Dssim, img1: *const DssimImage, img2: *const DssimImage) -> f64 {
     let Some(img1) = (unsafe { img1.as_ref() }) else { return f64::NAN };
     let Some(img2) = (unsafe { img2.as_ref() }) else { return f64::NAN };
-    let (val, _) = dssim.compare(img1, img2);
-    val.into()
+    match dssim.try_compare(img1, img2) {
+        Ok((val, _)) => val.into(),
+        Err(_) => f64::NAN,
+    }
 }
